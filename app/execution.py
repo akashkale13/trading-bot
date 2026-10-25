@@ -1,82 +1,60 @@
 from __future__ import annotations
 
-import os
-from typing import Any
+from dataclasses import dataclass
 
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from app.config import settings
+from app.strategies.base import TradeSignal
 
 
-class ZerodhaMCPClient:
-    """Minimal wrapper around the Kite MCP server.
+@dataclass
+class RiskCheck:
+    allows_trade: bool
+    reason: str
 
-    The exact tool names can vary bykite MCP version. To keep the project robust,
-    we accept configuration for both quote and order tool names. This lets you map
-    the names exposed by your server.
-    """
 
-    def __init__(self, base_url: str, quote_tool: str = "get_quote", order_tool: str = "place_order"):
-        self.base_url = base_url
-        self.quote_tool = quote_tool
-        self.order_tool = order_tool
-        self.session: ClientSession | None = None
-        self._client = None
+class ExecutionManager:
+    def __init__(self, client):
+        self.client = client
 
-    async def __aenter__(self):
-        await self.connect()
-        return self
+    def evaluate_risk(self, signal: TradeSignal) -> RiskCheck:
+        if signal.action == "HOLD":
+            return RiskCheck(False, "Hold signal does not require execution.")
 
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.disconnect()
+        if signal.quantity is not None and signal.quantity > settings.max_position_size:
+            return RiskCheck(False, f"Requested quantity {signal.quantity} exceeds max_position_size={settings.max_position_size}.")
 
-    async def connect(self):
-        self._client = streamablehttp_client(self.base_url)
-        self._read, self._write, _ = await self._client.__aenter__()
-        self.session = ClientSession(self._read, self._write)
-        await self.session.__aenter__()
+        return RiskCheck(True, "Risk checks passed.")
 
-    async def disconnect(self):
-        if self.session is not None:
-            await self.session.__aexit__(None, None, None)
-            self.session = None
-        if self._client is not None:
-            await self._client.__aexit__(None, None, None)
-            self._client = None
+    async def execute(self, signal: TradeSignal):
+        risk = self.evaluate_risk(signal)
+        if not risk.allows_trade:
+            return {
+                "status": "rejected",
+                "symbol": signal.symbol,
+                "action": signal.action,
+                "reason": risk.reason,
+            }
 
-    async def list_tools(self):
-        if self.session is None:
-            raise RuntimeError("MCP client is not connected.")
-        response = await self.session.list_tools()
-        return response.tools if hasattr(response, "tools") else response
+        if not settings.enable_live_trading:
+            return {
+                "status": "dry_run",
+                "symbol": signal.symbol,
+                "action": signal.action,
+                "strategy": signal.strategy_name,
+                "entry_price": signal.entry_price,
+                "reason": "Live trading is disabled. This was a simulated execution only.",
+            }
 
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None):
-        if self.session is None:
-            raise RuntimeError("MCP client is not connected.")
-        payload = arguments or {}
-        return await self.session.call_tool(tool_name, payload)
-
-    async def get_quote(self, symbol: str):
-        for tool_name in [self.quote_tool, "get_quote", "quote", "ltp", "market_quote"]:
-            if not tool_name:
-                continue
-            try:
-                return await self.call_tool(tool_name, {"symbol": symbol})
-            except Exception:
-                continue
-        raise RuntimeError(f"Unable to resolve quote data for {symbol} using Kite MCP tool names.")
-
-    async def place_order(self, symbol: str, side: str, quantity: int, order_type: str = "LIMIT", price: float | None = None):
-        for tool_name in [self.order_tool, "place_order", "create_order", "order_place"]:
-            if not tool_name:
-                continue
-            try:
-                return await self.call_tool(tool_name, {
-                    "symbol": symbol,
-                    "side": side,
-                    "quantity": quantity,
-                    "order_type": order_type,
-                    "price": price,
-                })
-            except Exception:
-                continue
-        raise RuntimeError(f"Unable to place order through Kite MCP for {symbol}. Check server tooling and env vars.")
+        result = await self.client.place_order(
+            symbol=signal.symbol,
+            side=signal.action,
+            quantity=signal.quantity or settings.quantity,
+            order_type=settings.order_type,
+            price=signal.entry_price,
+        )
+        return {
+            "status": "executed",
+            "symbol": signal.symbol,
+            "action": signal.action,
+            "execution_result": result,
+        }

@@ -1,60 +1,50 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from app.config import settings
-from app.strategies import TradeSignal
+from app.execution import ExecutionManager
+from app.strategies.base import build_market_snapshot
+from app.strategies.registry import get_strategies
 
 
-@dataclass
-class RiskCheck:
-    allows_trade: bool
-    reason: str
-
-
-class ExecutionManager:
+class TradingAgent:
     def __init__(self, client):
         self.client = client
+        self.executor = ExecutionManager(client)
+        self.strategies = get_strategies()
 
-    def evaluate_risk(self, signal: TradeSignal) -> RiskCheck:
+    def choose_strategy(self, snapshot):
+        if settings.strategy_mode == "rule_based":
+            if snapshot.volatility is not None and snapshot.volatility > 0.015:
+                return self.strategies["momentum_breakout"]
+            if snapshot.trend_strength > 0.02:
+                return self.strategies["trend_following"]
+            return self.strategies["mean_reversion"]
+
+        strategy_name = settings.default_strategy
+        return self.strategies.get(strategy_name, self.strategies["trend_following"])
+
+    async def analyze_symbol(self, symbol: str):
+        quote_payload = await self.client.get_quote(symbol)
+
+        if isinstance(quote_payload, dict):
+            payload = quote_payload
+        elif hasattr(quote_payload, "content"):
+            payload = getattr(quote_payload, "content")
+        else:
+            payload = {"last_price": 0.0}
+
+        snapshot = build_market_snapshot(symbol, payload)
+        strategy = self.choose_strategy(snapshot)
+        signal = strategy.evaluate(snapshot)
+        signal.quantity = settings.quantity
+
         if signal.action == "HOLD":
-            return RiskCheck(False, "Hold signal does not require execution.")
+            return {"status": "hold", "symbol": symbol, "signal": signal}
 
-        if signal.quantity is not None and signal.quantity > settings.max_position_size:
-            return RiskCheck(False, f"Requested quantity {signal.quantity} exceeds max_position_size={settings.max_position_size}.")
+        return await self.executor.execute(signal)
 
-        return RiskCheck(True, "Risk checks passed.")
-
-    async def execute(self, signal: TradeSignal):
-        risk = self.evaluate_risk(signal)
-        if not risk.allows_trade:
-            return {
-                "status": "rejected",
-                "symbol": signal.symbol,
-                "action": signal.action,
-                "reason": risk.reason,
-            }
-
-        if not settings.enable_live_trading:
-            return {
-                "status": "dry_run",
-                "symbol": signal.symbol,
-                "action": signal.action,
-                "strategy": signal.strategy_name,
-                "entry_price": signal.entry_price,
-                "reason": "Live trading is disabled. This was a simulated execution only.",
-            }
-
-        result = await self.client.place_order(
-            symbol=signal.symbol,
-            side=signal.action,
-            quantity=signal.quantity or settings.quantity,
-            order_type=settings.order_type,
-            price=signal.entry_price,
-        )
-        return {
-            "status": "executed",
-            "symbol": signal.symbol,
-            "action": signal.action,
-            "execution_result": result,
-        }
+    async def analyze_watchlist(self):
+        results = []
+        for symbol in [item.strip() for item in settings.watchlist.split(",") if item.strip()]:
+            results.append(await self.analyze_symbol(symbol))
+        return results

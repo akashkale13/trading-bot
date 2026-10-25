@@ -1,0 +1,17 @@
+app/
+  __init__.py
+  agent.py
+  config.py
+  execution.py
+  zerodha_client.py
+  market/
+    __init__.py
+    provider.py
+    zerodha.py
+  strategies/
+    __init__.py
+    base.py
+    trend_following.py
+    mean_reversion.py
+    momentum_breakout.py
+    registry.py

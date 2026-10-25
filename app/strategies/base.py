@@ -1,3 +1,5 @@
+"""Common trading market model classes."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
