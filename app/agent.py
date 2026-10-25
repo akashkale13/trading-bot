@@ -1,104 +1,51 @@
-"""Common trading market model classes."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
-Action = Literal["BUY", "SELL", "HOLD"]
-
-
-@dataclass
-class TradeSignal:
-    symbol: str
-    action: Action
-    confidence: float
-    reason: str
-    strategy_name: str
-    entry_price: float | None = None
-    stop_loss: float | None = None
-    target: float | None = None
-    quantity: int | None = None
+from app.config import settings
+from app.execution.manager import ExecutionManager
+from app.strategies.base import build_market_snapshot
+from app.strategies.registry import get_strategies
 
 
-@dataclass
-class MarketSnapshot:
-    symbol: str
-    last_price: float
-    previous_close: float
-    ma_20: float | None = None
-    ma_50: float | None = None
-    volume: float | None = None
-    volatility: float | None = None
-    rsi: float | None = None
+class TradingAgent:
+    def __init__(self, client):
+        self.client = client
+        self.executor = ExecutionManager(client)
+        self.strategies = get_strategies()
 
-    @property
-    def trend_strength(self) -> float:
-        if self.ma_20 is None or self.ma_50 is None:
-            return 0.0
-        if self.ma_50 == 0:
-            return 0.0
-        return (self.ma_20 - self.ma_50) / self.ma_50
+    def choose_strategy(self, snapshot):
+        if settings.strategy_mode == "rule_based":
+            if snapshot.volatility is not None and snapshot.volatility > 0.015:
+                return self.strategies["momentum_breakout"]
+            if snapshot.trend_strength > 0.02:
+                return self.strategies["trend_following"]
+            return self.strategies["mean_reversion"]
 
+        strategy_name = settings.default_strategy
+        return self.strategies.get(strategy_name, self.strategies["trend_following"])
 
-class Strategy:
-    name: str = "base"
+    async def analyze_symbol(self, symbol: str):
+        quote_payload = await self.client.get_quote(symbol)
 
-    def evaluate(self, snapshot: MarketSnapshot) -> TradeSignal:
-        raise NotImplementedError
+        payload = quote_payload
+        if isinstance(quote_payload, list):
+            payload = quote_payload[0] if quote_payload else {}
+        elif isinstance(quote_payload, dict) and isinstance(quote_payload.get("data"), list):
+            payload = quote_payload["data"][0] if quote_payload["data"] else {}
+        elif hasattr(quote_payload, "content"):
+            payload = getattr(quote_payload, "content")
 
+        snapshot = build_market_snapshot(symbol, payload)
+        strategy = self.choose_strategy(snapshot)
+        signal = strategy.evaluate(snapshot)
+        signal.quantity = settings.quantity
 
-def _normalize_quote_payload(payload: object) -> dict:
-    if payload is None:
-        return {}
+        if signal.action == "HOLD":
+            return {"status": "hold", "symbol": symbol, "signal": signal}
 
-    if isinstance(payload, dict):
-        data = payload.get("data")
-        if isinstance(data, list) and data:
-            first = data[0]
-            if isinstance(first, dict):
-                return first
-        return payload
+        return await self.executor.execute(signal)
 
-    if isinstance(payload, list):
-        if not payload:
-            return {}
-        first = payload[0]
-        if isinstance(first, dict):
-            return first
-        return {}
-
-    if hasattr(payload, "content"):
-        content = getattr(payload, "content")
-        if content is not None:
-            return _normalize_quote_payload(content)
-
-    return {}
-
-
-def build_market_snapshot(symbol: str, quote_payload: object) -> MarketSnapshot:
-    payload = _normalize_quote_payload(quote_payload)
-
-    price = float(
-        payload.get(
-            "last_price",
-            payload.get("ltp", payload.get("close", payload.get("lastPrice", 0.0))),
-        )
-    )
-    previous_close = float(payload.get("previous_close", payload.get("prev_close", payload.get("close", price))))
-    ma_20 = payload.get("ma_20")
-    ma_50 = payload.get("ma_50")
-    volume = payload.get("volume")
-    volatility = payload.get("volatility")
-    rsi = payload.get("rsi")
-
-    return MarketSnapshot(
-        symbol=symbol,
-        last_price=price,
-        previous_close=previous_close,
-        ma_20=float(ma_20) if ma_20 is not None else None,
-        ma_50=float(ma_50) if ma_50 is not None else None,
-        volume=float(volume) if volume is not None else None,
-        volatility=float(volatility) if volatility is not None else None,
-        rsi=float(rsi) if rsi is not None else None,
-    )
+    async def analyze_watchlist(self):
+        results = []
+        for symbol in [item.strip() for item in settings.watchlist.split(",") if item.strip()]:
+            results.append(await self.analyze_symbol(symbol))
+        return results

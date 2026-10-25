@@ -1,101 +1,106 @@
+"""Common trading market model classes."""
+
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Literal
 
-from mcp import Client
-
-from app.market.provider import MarketDataProvider
+Action = Literal["BUY", "SELL", "HOLD"]
 
 
-class ZerodhaMCPClient(MarketDataProvider):
-    """Concrete market data and execution provider for Zerodha Kite MCP."""
+@dataclass
+class TradeSignal:
+    symbol: str
+    action: Action
+    confidence: float
+    reason: str
+    strategy_name: str
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    target: float | None = None
+    quantity: int | None = None
 
-    def __init__(self, base_url: str, quote_tool: str = "get_quotes", order_tool: str = "place_order"):
-        self.base_url = base_url
-        self.quote_tool = quote_tool
-        self.order_tool = order_tool
-        self.session = None
-        self._client: Client | None = None
 
-    async def __aenter__(self):
-        await self.connect()
-        return self
+@dataclass
+class MarketSnapshot:
+    symbol: str
+    last_price: float
+    previous_close: float
+    ma_20: float | None = None
+    ma_50: float | None = None
+    volume: float | None = None
+    volatility: float | None = None
+    rsi: float | None = None
 
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.disconnect()
+    @property
+    def trend_strength(self) -> float:
+        if self.ma_20 is None or self.ma_50 is None:
+            return 0.0
+        if self.ma_50 == 0:
+            return 0.0
+        return (self.ma_20 - self.ma_50) / self.ma_50
 
-    async def connect(self):
-        self._client = Client(self.base_url)
-        self.session = await self._client.__aenter__()
 
-    async def disconnect(self):
-        if self._client is not None:
-            await self._client.__aexit__(None, None, None)
-            self._client = None
-        self.session = None
+class Strategy:
+    name: str = "base"
 
-    async def list_tools(self):
-        if self.session is None:
-            raise RuntimeError("MCP client is not connected.")
-        response = await self.session.list_tools()
-        return response.tools if hasattr(response, "tools") else response
+    def evaluate(self, snapshot: MarketSnapshot) -> TradeSignal:
+        raise NotImplementedError
 
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None):
-        if self.session is None:
-            raise RuntimeError("MCP client is not connected.")
-        payload = arguments or {}
-        return await self.session.call_tool(tool_name, payload)
 
-    @staticmethod
-    def normalize_symbol(symbol: str) -> str:
-        cleaned = symbol.strip()
-        if not cleaned:
-            raise ValueError("Empty symbol provided.")
-        if ":" in cleaned:
-            return cleaned
-        return f"NSE:{cleaned.upper()}"
+def _normalize_quote_payload(payload: object) -> dict:
+    if payload is None:
+        return {}
 
-    async def get_quote(self, symbol: str) -> dict[str, Any]:
-        normalized_symbol = self.normalize_symbol(symbol)
-        tool_names = [self.quote_tool, "get_quotes", "get_quote", "quote", "ltp", "market_quote"]
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                return first
+        return payload
 
-        last_error: Exception | None = None
-        for tool_name in tool_names:
-            if not tool_name:
-                continue
-            try:
-                return await self.call_tool(tool_name, {"instruments": [normalized_symbol]})
-            except Exception as exc:
-                last_error = exc
-                continue
+    if isinstance(payload, list):
+        if not payload:
+            return {}
+        first = payload[0]
+        if isinstance(first, dict):
+            return first
+        return {}
 
-        raise RuntimeError(
-            f"Unable to resolve quote data for {symbol} using Kite MCP tool names. "
-            f"Last error: {last_error}"
+    if hasattr(payload, "content"):
+        content = getattr(payload, "content")
+        if content is not None:
+            return _normalize_quote_payload(content)
+
+    return {}
+
+
+def build_market_snapshot(symbol: str, quote_payload: object) -> MarketSnapshot:
+    payload = _normalize_quote_payload(quote_payload)
+
+    price = float(
+        payload.get(
+            "last_price",
+            payload.get("ltp", payload.get("close", payload.get("lastPrice", 0.0))),
         )
+    )
+    previous_close = float(
+        payload.get("previous_close", payload.get("prev_close", payload.get("close", price)))
+    )
+    ma_20 = payload.get("ma_20")
+    ma_50 = payload.get("ma_50")
+    volume = payload.get("volume")
+    volatility = payload.get("volatility")
+    rsi = payload.get("rsi")
 
-    async def place_order(
-        self,
-        symbol: str,
-        side: str,
-        quantity: int,
-        order_type: str = "LIMIT",
-        price: float | None = None,
-    ) -> dict[str, Any]:
-        for tool_name in [self.order_tool, "place_order", "create_order", "order_place"]:
-            if not tool_name:
-                continue
-            try:
-                return await self.call_tool(
-                    tool_name,
-                    {
-                        "symbol": symbol,
-                        "side": side,
-                        "quantity": quantity,
-                        "order_type": order_type,
-                        "price": price,
-                    },
-                )
-            except Exception:
-                continue
-        raise RuntimeError(f"Unable to place order through Kite MCP for {symbol}. Check server tooling and env vars.")
+    return MarketSnapshot(
+        symbol=symbol,
+        last_price=price,
+        previous_close=previous_close,
+        ma_20=float(ma_20) if ma_20 is not None else None,
+        ma_50=float(ma_50) if ma_50 is not None else None,
+        volume=float(volume) if volume is not None else None,
+        volatility=float(volatility) if volatility is not None else None,
+        rsi=float(rsi) if rsi is not None else None,
+    )
