@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp import Client
 
 from app.market.provider import MarketDataProvider
 
@@ -15,8 +14,8 @@ class ZerodhaMCPClient(MarketDataProvider):
         self.base_url = base_url
         self.quote_tool = quote_tool
         self.order_tool = order_tool
-        self.session: ClientSession | None = None
-        self._client = None
+        self.session = None
+        self._client: Client | None = None
 
     async def __aenter__(self):
         await self.connect()
@@ -26,18 +25,14 @@ class ZerodhaMCPClient(MarketDataProvider):
         await self.disconnect()
 
     async def connect(self):
-        self._client = streamablehttp_client(self.base_url)
-        self._read, self._write, _ = await self._client.__aenter__()
-        self.session = ClientSession(self._read, self._write)
-        await self.session.__aenter__()
+        self._client = Client(self.base_url)
+        self.session = await self._client.__aenter__()
 
     async def disconnect(self):
-        if self.session is not None:
-            await self.session.__aexit__(None, None, None)
-            self.session = None
         if self._client is not None:
             await self._client.__aexit__(None, None, None)
             self._client = None
+        self.session = None
 
     async def list_tools(self):
         if self.session is None:
