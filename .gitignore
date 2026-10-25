@@ -1,24 +1,32 @@
-# Compiled class file
-*.class
+from __future__ import annotations
 
-# Log file
-*.log
+import argparse
+import asyncio
 
-# BlueJ files
-*.ctxt
+from app.agent import TradingAgent
+from app.config import settings
+from app.zerodha_client import ZerodhaMCPClient
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
+async def main():
+    parser = argparse.ArgumentParser(description="Run the Zerodha Kite MCP trading agent.")
+    parser.add_argument("--symbol", type=str, default=settings.alert_symbol, help="Symbol to analyze.")
+    parser.add_argument("--dry-run", action="store_true", help="Do not place a live order.")
+    args = parser.parse_args()
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+    if args.dry_run:
+        settings.enable_live_trading = False
+
+    async with ZerodhaMCPClient(
+        base_url=settings.kite_mcp_url,
+        quote_tool=settings.kite_mcp_quote_tool,
+        order_tool=settings.kite_mcp_order_tool,
+    ) as client:
+        agent = TradingAgent(client)
+        result = await agent.analyze_symbol(args.symbol)
+        print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
