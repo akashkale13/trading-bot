@@ -1,81 +1,100 @@
-# AI Trading Agent for Zerodha Kite MCP
+# AI Trading Bot
 
-This repository is a starter for an AI-driven trading agent that:
-- connects to the Zerodha Kite MCP server,
-- fetches live quotes for symbols,
-- evaluates market conditions with configurable strategies,
-- decides which strategy to apply under your control,
-- generates a trade decision,
-- optionally executes the trade through the Kite MCP server.
+This repository is a modular trading bot framework designed to make it easy to connect a live market data provider, run strategy evaluation, validate risk, and optionally execute trades.
 
-The design is deliberately conservative:
-- market data comes from Kite MCP,
-- strategy selection is explicit and controllable,
-- order execution is disabled by default unless you explicitly enable live trading,
-- all trading credentials must be stored in environment variables and never committed to Git.
+The current default provider is Zerodha via the Kite MCP server, but the system is intentionally built so that other providers can be plugged in later without changing the strategy and execution layers.
 
-## Architecture
+## What this repo includes
 
-- `app/config.py` — settings and environment configuration
-- `app/zerodha_client.py` — MCP client wrapper for Kite
-- `app/strategies.py` — strategy implementations and signal generation
-- `app/agent.py` — AI / rule-based decision engine
-- `app/execution.py` — broker order execution layer
+- live market data integration layer
+- strategy evaluation modules
+- risk guardrails and execution safety checks
+- a simple agent/orchestrator that chooses the strategy based on market conditions
+- a dry-run default mode so live trading is never enabled by accident
+
+## Current architecture
+
+- `app/market/` — provider abstraction and market adapters
+  - `provider.py` — common interface for market providers
+  - `zerodha.py` — Zerodha Kite MCP implementation
+- `app/strategies/` — strategy implementations and registration
+  - `base.py` — shared model definitions and strategy contract
+  - `trend_following.py`
+  - `mean_reversion.py`
+  - `momentum_breakout.py`
+  - `registry.py`
+- `app/agent.py` — orchestration layer selecting strategy and processing signals
+- `app/execution.py` — order execution and risk validation
+- `app/config.py` — application configuration and environment variables
 - `main.py` — CLI entry point
+
+## Why this structure
+
+This repo is not limited to Kite MCP. It is designed around a provider pattern:
+
+- The market data provider is abstracted behind a common interface
+- Strategies only care about market snapshots and signal output
+- The execution layer can be swapped or extended independently
+- A future provider such as Polygon, Alpaca, or another broker can be added by implementing the same interface
+
+This makes the bot easier to evolve without mixing broker-specific logic into strategy code.
+
+## Default provider: Zerodha Kite MCP
+
+The default implementation currently connects to Zerodha through the Kite MCP server.
+
+Official references:
+- https://zerodha.com/z-connect/featured/connect-your-zerodha-account-to-ai-assistants-with-kite-mcp
+- https://github.com/zerodha/kite-mcp-server
 
 ## Quick start
 
-1. Create a virtual environment and install dependencies:
+1. Create a virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+```
+
+2. Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-2. Copy the example environment file and fill in your values:
+3. Copy the example env file:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Review the values in `.env`.
+4. Update `.env` with your provider and execution settings.
 
-4. Dry-run a sample quote analysis:
+5. Run a dry-run example:
 
 ```bash
-python main.py --symbol NIFTY 50 --dry-run
+python main.py --symbol "NIFTY 50" --dry-run
 ```
 
-The repo is intentionally safe by default. The agent will not place a live trade unless you explicitly enable execution and provide a valid Kite account configuration.
+## Safety defaults
 
-## Required Kite MCP setup
+This repository is intentionally conservative:
 
-You should point the agent at the Kite MCP endpoint you are using. The official Zerodha MCP integration is documented here:
+- live trading is disabled by default
+- strategy selection is rule-driven by default
+- position size is capped by configuration
+- execution checks reject invalid or unsafe trade actions
+- credentials should never be committed to Git
 
-- https://zerodha.com/z-connect/featured/connect-your-zerodha-account-to-ai-assistants-with-kite-mcp
-- https://github.com/zerodha/kite-mcp-server
+## Future extension ideas
 
-The exact tool names exposed by the MCP server may vary by version. This project supports environment-based configuration for the quote and order tools so you can map the real tool names from your connected server.
-
-## Safe execution policy
-
-This starter enforces guardrails:
-- no live trade execution unless `ENABLE_LIVE_TRADING=true`
-- order quantity is validated against `MAX_POSITION_SIZE`
-- daily loss limits are enforced in the execution layer
-- a strategy must produce a valid action (BUY/SELL/HOLD)
-
-## Future extension
-
-This repo can later be extended with:
-- OpenAI / Azure OpenAI reasoning layer
-- portfolio-level risk engine
-- watchlist-based scanning
-- multi-symbol automation
-- paper trading mode
-- webhook / dashboard notifications
+- add a paper trading mode
+- add more strategies
+- add portfolio-level risk checks
+- add watchlist scanning
+- add backtesting and simulation mode
+- add LLM-based decision support while keeping trade execution rules strict
 
 ## Important
 
-This repository is a template and does not guarantee live-trading correctness. Always test in paper mode or with very small quantities before using real capital.
+This project is a framework and starter implementation, not a guarantee of profitable live trading. Always validate in dry-run, paper trading, or very small quantities before using real capital.
