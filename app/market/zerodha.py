@@ -10,7 +10,7 @@ from app.market.provider import MarketDataProvider
 class ZerodhaMCPClient(MarketDataProvider):
     """Concrete market data and execution provider for Zerodha Kite MCP."""
 
-    def __init__(self, base_url: str, quote_tool: str = "get_quote", order_tool: str = "place_order"):
+    def __init__(self, base_url: str, quote_tool: str = "get_quotes", order_tool: str = "place_order"):
         self.base_url = base_url
         self.quote_tool = quote_tool
         self.order_tool = order_tool
@@ -46,15 +46,33 @@ class ZerodhaMCPClient(MarketDataProvider):
         payload = arguments or {}
         return await self.session.call_tool(tool_name, payload)
 
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
+        cleaned = symbol.strip()
+        if not cleaned:
+            raise ValueError("Empty symbol provided.")
+        if ":" in cleaned:
+            return cleaned
+        return f"NSE:{cleaned.upper()}"
+
     async def get_quote(self, symbol: str) -> dict[str, Any]:
-        for tool_name in [self.quote_tool, "get_quote", "quote", "ltp", "market_quote"]:
+        normalized_symbol = self.normalize_symbol(symbol)
+        tool_names = [self.quote_tool, "get_quotes", "get_quote", "quote", "ltp", "market_quote"]
+
+        for tool_name in tool_names:
             if not tool_name:
                 continue
             try:
-                return await self.call_tool(tool_name, {"symbol": symbol})
-            except Exception:
+                result = await self.call_tool(tool_name, {"instruments": [normalized_symbol]})
+                return result
+            except Exception as exc:
+                last_error = exc
                 continue
-        raise RuntimeError(f"Unable to resolve quote data for {symbol} using Kite MCP tool names.")
+
+        raise RuntimeError(
+            f"Unable to resolve quote data for {symbol} using Kite MCP tool names. "
+            f"Last error: {last_error}"
+        )
 
     async def place_order(
         self,
